@@ -1776,52 +1776,138 @@ document.addEventListener('click',function(e){
 });
 function onKey(e){if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendQ();}}
 function buildSys(){
-  const p=PERSONAS[activePid];
-  const sc=SCENARIOS[activeScenario];
-  const perspIds=p.perspectives.map(x=>x.id).join(', ');
-  const kpiStr=getKPIsForPersona(activePid).map(k=>`${k.code}=${k.val}${k.rag==='r'?'🔴':k.rag==='y'?'🟡':'🟢'}`).join(' ');
-  const optStr=Object.values(sc.options).map(o=>`${o.id}:${o.short}[S${o.scores[0]}/F${o.scores[1]}/P${o.scores[2]}/C${o.scores[3]}]`).join(' ');
-  const cellSummary=p.perspectives.map(persp=>{
-    const scores=EMOCOLS.map(emo=>{
-      try{
-        const e=computeDecision(activePid,persp.id,emo,getKPIsForPersona(activePid));
-        return `${emo[0].toUpperCase()}:${e.recommendation.id}(${e.recommendation.score})`;
-      }catch(ex){return `${emo[0].toUpperCase()}:C(60)`;}
-    }).join(' ');
-    return `${persp.id}: ${scores}`;
-  }).join('\n');
+  const p   = PERSONAS[activePid];
+  const sc  = SCENARIOS[activeScenario];
+  const kpiStr = getKPIsForPersona(activePid)
+    .map(k=>`${k.code}=${k.val}${k.rag==='r'?'🔴':k.rag==='y'?'🟡':'🟢'}`).join(' ');
+  const optStr = Object.values(sc.options)
+    .map(o=>`${o.id}:${o.short}[S${o.scores[0]}/F${o.scores[1]}/P${o.scores[2]}/C${o.scores[3]}]`).join(' | ');
 
-  return `You are a decision assistant for ${p.name} (${p.role}). Scenario: ${sc.label}.
+  // Compute persona-specific variance facts for financial/schedule questions
+  const kpisLive = getKPIsForPersona(activePid);
+  const varianceFacts = (()=>{
+    const facts = [];
+    // P4 CFO — financial variance
+    if(activePid==='P4'){
+      facts.push('Slab import overshoot: £38/tonne above plan = £4.4M/month = £79M projected total gap');
+      facts.push('Contingency remaining: 67% of £93M = £62M available vs 14 months of programme');
+      facts.push('Grant clawback exposure: £50M if DBET classifies breach');
+      facts.push('Covenant headroom: £118M before formal review triggers');
+      facts.push('Early draw available: £50M from DBET if applied for');
+    }
+    // P1 CEO — schedule and programme variance
+    if(activePid==='P1'){
+      facts.push('Schedule adherence: 73% of milestones on time (target: 90%)');
+      facts.push('Schedule variance: 5 weeks behind Tenova milestone plan');
+      facts.push('EAF skills gap: 47% of 400 operators trained = 212 unfilled roles');
+      facts.push('Customer offtake gap: 61% of 3.2M tonne target contracted = 1.25M tonnes uncontracted');
+      facts.push('Grant conditions at risk: 2 of the covenant conditions');
+    }
+    // P3 Project Director — construction variance
+    if(activePid==='P3'){
+      facts.push('Schedule variance: 5 weeks behind Tenova milestone plan');
+      facts.push('Tenova cooperation score: 2/5 (critical — suspension risk is live)');
+      facts.push('Open VO-112 claim: £31.4M total (£16.5M agreed + £14.9M disputed)');
+      facts.push('If suspended: 6–8 weeks programme loss + ~£18M cost = total exposure £32.9M');
+      facts.push('LTIFR: 0.8 per million man-hours (industry avg 1.2 — performing well)');
+    }
+    // P2 CHRO — workforce variance
+    if(activePid==='P2'){
+      facts.push('EAF operator readiness: 47% = 188 trained of 400 required');
+      facts.push('Workforce gap: 212 unfilled EAF roles with 20 months to commissioning');
+      facts.push('Graduation rate: 74% per cohort (target: 85%)');
+      facts.push('Union relationship: 3/5 — stable but fragile');
+      facts.push('Year 1 revenue impact of under-staffing: 15–25% below plan if <300 at commissioning');
+    }
+    // P10 Commercial — commercial variance
+    if(activePid==='P10'){
+      facts.push('Offtake gap: 61% contracted = 1.25M tonnes of 3.2M target uncontracted');
+      facts.push('BMW revenue at risk: £48M/year if AHSS grade commitment not made');
+      facts.push('Customer NPS: 44/100 for automotive segment');
+      facts.push('Alt-supplier qualifications: 1 customer actively qualifying a competitor');
+      facts.push('Green premium potential: £8–12/tonne on certified EAF steel = £26–38M/year at full volume');
+    }
+    return facts;
+  })();
+
+  // Build scored cell table so model can pick the EXACT best cell
+  // Format: perspId|emotion|score|recOption
+  const rows = [];
+  let topScore = -1, topPersp = '', topEmo = '';
+  let secondScore = -1, secondPersp = '', secondEmo = '';
+
+  p.perspectives.forEach(persp => {
+    EMOCOLS.forEach(emo => {
+      try {
+        const e = computeDecision(activePid, persp.id, emo, getKPIsForPersona(activePid));
+        const s = e.recommendation.score;
+        rows.push(`${persp.id}|${emo}|${s}|${e.recommendation.id}`);
+        if (s > topScore) {
+          secondScore = topScore; secondPersp = topPersp; secondEmo = topEmo;
+          topScore = s; topPersp = persp.id; topEmo = emo;
+        } else if (s > secondScore) {
+          secondScore = s; secondPersp = persp.id; secondEmo = emo;
+        }
+      } catch(ex) {
+        rows.push(`${persp.id}|${emo}|60|C`);
+      }
+    });
+  });
+
+  // Build highlight example using actual best cells
+  const hlExample = JSON.stringify({
+    primary: { persp: topPersp, emo: topEmo },
+    supporting: secondPersp ? [{ persp: secondPersp, emo: secondEmo }] : []
+  });
+
+  const perspIdList = p.perspectives.map(x=>x.id).join(', ');
+
+  return `Decision assistant for ${p.name} (${p.role}). Scenario: ${sc.label}.
 Non-negotiable: ${p.non_negotiable}
 KPIs: ${kpiStr}
+${varianceFacts.length ? 'KEY VARIANCE DATA:\n'+varianceFacts.map(f=>'- '+f).join('\n') : ''}
 Options: ${optStr}
-Matrix scores (C=Cautious S=Strategic A=Analytical D=Decisive):
-${cellSummary}
-Valid perspective IDs: ${perspIds}
-Valid emotions: cautious, strategic, analytical, decisive
 
-STRICT FORMAT — follow exactly, no deviation:
+SCORED MATRIX (perspectiveId|emotion|score|recommendedOption):
+${rows.join('\n')}
 
-VERDICT: <one sentence, lead with a number or action>
+Valid perspective IDs (use EXACTLY as shown): ${perspIdList}
+Valid emotions (use EXACTLY): cautious, strategic, analytical, decisive
 
-DATA: <2-3 lines, each starting with the value in brackets>
-[value] label 🔴/🟡/🟢
-[value] label 🔴/🟡/🟢
+RESPOND IN EXACTLY THIS STRUCTURE — copy the labels exactly:
 
-RISKS: <2-3 lines>
-HIGH/MED/LOW — short phrase
+VERDICT: [your one sentence here — start with a number or action]
+
+DATA:
+[£value or number] description 🔴
+[£value or number] description 🟡
+[£value or number] description 🟢
+
+RISKS:
+HIGH — short phrase
+MED — short phrase
 
 \`\`\`highlight
-{"primary":{"persp":"PICK_ONE_FROM_VALID_IDS","emo":"PICK_ONE_EMOTION"},"supporting":[{"persp":"PICK_SECOND_ID","emo":"PICK_EMOTION"}]}
+${hlExample}
 \`\`\`
 
-RULES:
-- Replace PICK_ONE_FROM_VALID_IDS with the most relevant perspective ID for the question
-- Replace PICK_ONE_EMOTION with the emotion that best matches the answer
-- For supporting: pick 1 additional relevant cell, or use empty array []
-- The \`\`\`highlight block MUST be at the very end, after RISKS
-- Do NOT include any text after the closing \`\`\` of the highlight block
-- CXO audience. Max 60 words above the highlight block. Numbers first.`;
+RULES — follow all of these without exception:
+1. Use the EXACT label words: VERDICT: / DATA: / RISKS:
+2. DATA lines MUST start with [ and end with ] then description then emoji
+3. The \`\`\`highlight block comes LAST — after RISKS, nothing else after it
+4. primary.persp must be EXACTLY one of: ${perspIdList}
+5. primary.emo must be EXACTLY one of: cautious, strategic, analytical, decisive
+6. supporting is 0 or 1 cells only — use [] if not needed
+7. Total words before the highlight block: MAX 60
+8. Do NOT explain your reasoning. Do NOT add extra sections.
+
+VARIANCE QUESTION RULES:
+- If asked about "variance", "gap", "overshoot", "behind", "shortfall", or "how much":
+  Answer using the KEY VARIANCE DATA above — give the ACTUAL numbers, not MCDA scores
+  VERDICT should state the specific variance number (e.g. "£79M slab import overshoot" or "212 operator roles unfilled")
+- If the variance question is not relevant to this persona, reply:
+  VERDICT: That variance does not apply to [persona name]. As [role], the key variance is [most relevant variance fact].
+  Then answer with the most relevant variance for this persona instead`;
 }
 async function sendQ(){
   const ta=document.getElementById("qinput");const q=ta.value.trim();
@@ -1867,21 +1953,47 @@ async function sendQ(){
 
     // Parse highlight block
     const hlm=raw.match(/```highlight\s*([\s\S]*?)```/);
+    // Parse and apply highlight block
+    const p=PERSONAS[activePid];
+    const validIds=new Set(p.perspectives.map(x=>x.id));
+    const validEmos=new Set(['cautious','strategic','analytical','decisive']);
+    const validCell=(c)=>c&&c.persp&&c.emo&&validIds.has(c.persp)&&validEmos.has(c.emo);
+
+    let primary=null, supporting=[];
     if(hlm){
       try{
         const hl=JSON.parse(hlm[1].trim());
-        const p=PERSONAS[activePid];
-        const validIds=new Set(p.perspectives.map(x=>x.id));
-        const validEmos=new Set(['cautious','strategic','analytical','decisive']);
-        const validCell=(c)=>c&&validIds.has(c.persp)&&validEmos.has(c.emo);
-        const primary=validCell(hl.primary)?hl.primary:null;
-        const supporting=(hl.supporting||[]).filter(validCell).slice(0,2);
-        if(primary||supporting.length) highlightCells(activePid, primary, supporting);
-      }catch(e){ console.warn("highlight parse failed:", e); }
+        console.log("Highlight parsed:", JSON.stringify(hl));
+        primary   = validCell(hl.primary) ? hl.primary : null;
+        supporting= (hl.supporting||[]).filter(validCell).slice(0,2);
+        if(!primary) console.warn("primary cell invalid:", hl.primary, "valid IDs:", [...validIds]);
+      }catch(e){ console.warn("highlight JSON parse failed:", e, "raw:", hlm[1]); }
     }
 
+    // Fallback: if no valid primary, highlight the top-scoring cell from the engine
+    if(!primary){
+      let topScore=-1, topPersp='', topEmo='';
+      p.perspectives.forEach(persp=>{
+        EMOCOLS.forEach(emo=>{
+          try{
+            const e=computeDecision(activePid,persp.id,emo,getKPIsForPersona(activePid));
+            if(e.recommendation.score>topScore){
+              topScore=e.recommendation.score; topPersp=persp.id; topEmo=emo;
+            }
+          }catch(ex){}
+        });
+      });
+      if(topPersp){ primary={persp:topPersp,emo:topEmo}; console.log("Fallback primary:", primary); }
+    }
+
+    if(primary||supporting.length) highlightCells(activePid, primary, supporting);
+
     // Render structured output
-    const clean=raw.replace(/```highlight[\s\S]*?```/g,"").trim();
+    const clean=raw
+      .replace(/```highlight[\s\S]*?```/g,"")  // strip fenced highlight block
+      .replace(/\{"primary"[\s\S]*?\}\s*$/g,"") // strip unfenced JSON at end
+      .replace(/\{"primary":[\s\S]*?\}\s*/g,"") // strip inline JSON anywhere
+      .trim();
     document.getElementById("tdi")?.remove();
     addMsg("ai", renderAIResponse(clean));
   } catch(e) {
@@ -1911,9 +2023,9 @@ function renderAIResponse(text){
   }
 
   // Parse VERDICT / DATA / RISKS sections
-  const verdictM=text.match(/VERDICT:\s*(.+?)(?=\n[A-Z]+:|$)/s);
-  const dataM=text.match(/DATA:\s*(.+?)(?=\n[A-Z]+:|$)/s);
-  const risksM=text.match(/RISKS:\s*(.+?)(?=\n[A-Z]+:|$)/s);
+  const verdictM=text.match(/VERDICT:\s*(.+?)(?=\nDATA:|\nRISKS:|\n```|$)/is);
+  const dataM=text.match(/DATA:\s*\n?([\s\S]+?)(?=\nRISKS:|\n```|$)/i);
+  const risksM=text.match(/RISKS:\s*\n?([\s\S]+?)(?=\n```|\nVERDICT:|$)/i);
 
   // If structured, render as cards
   if(verdictM){
@@ -1928,7 +2040,13 @@ function renderAIResponse(text){
       const lines=dataM[1].trim().split('\n').filter(l=>l.trim());
       const chips=lines.map(l=>{
         const rag=l.includes("🔴")?"r":l.includes("🟡")?"y":l.includes("🟢")?"g":"n";
-        const clean=l.replace(/^[-•·\[\]]\s*/g,"").replace(/\*\*(.*?)\*\*/g,"<b>$1</b>").trim();
+        // Handle [value] label format OR plain value label format
+        const clean=l
+          .replace(/^\s*\[([^\]]+)\]\s*/,"$1 ")  // [value] → value
+          .replace(/^[-•·]\s*/,"")               // strip bullets
+          .replace(/\*\*(.*?)\*\*/g,"<b>$1</b>") // bold
+          .replace(/🔴|🟡|🟢/g,"")              // strip emoji (shown as chip color)
+          .trim();
         return `<span class="ans-chip ${rag}">${clean}</span>`;
       }).join("");
       html+=`<div class="ans-section"><div class="ans-section-label">Key data</div><div class="ans-chips">${chips}</div></div>`;
